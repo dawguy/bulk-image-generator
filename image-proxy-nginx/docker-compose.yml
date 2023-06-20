@@ -1,0 +1,11 @@
+version: "2.2"
+services:
+  reverse-proxy:
+    image: nginx:latest
+    container_name: image-proxy-nginx
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+      - ~/generated-images:/opt/gen-images
+    ports:
+      - "4044:80"
+      - "443:443"
