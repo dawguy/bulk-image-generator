@@ -1,6 +1,7 @@
 (ns bulk-image-generator.core
   (:require [clojure.java.io :as io]
-            [clj-http.client :as http]))
+            [clj-http.client :as http])
+  (:import (java.io File)))
 
 (def user-home (let [f (io/file (System/getProperty "user.home"))
                      home (or (.getAbsolutePath f) "/tmp")]
@@ -18,72 +19,100 @@
           (map #(.getName %))
           (into #{})))
 
-(def todo-prompts (atom #{}))
-(def completed-prompts (atom #{}))
+(def todo-prompts (atom []))
+(def completed-prompts (atom {}))
+
+(defn prn-prompts []
+  (prn @todo-prompts)
+  (prn @completed-prompts))
 
 (defn gen-prompt-lists []
+  (prn "Attempting to generate prompt lists")
   (let [existing-dirs (existing-dirs->set img-output-dir)]
+    (reset! todo-prompts [])
+    (reset! completed-prompts {})
+    (prn "Opening prompt file")
     (with-open [r (io/reader prompt-input-file)]
       (doseq [l (line-seq r)]
+        (prn (str "Line found: " l))
         (if (get existing-dirs l)
-          (swap! completed-prompts conj l)
+          (swap! completed-prompts assoc l {:seeds []})
           (swap! todo-prompts conj l)
           ))))
   {:todos @todo-prompts
    :completed @completed-prompts})
 
-(defn send-api-request [prompt]
+(defn send-api-request [prompt seed]
     (http/post "http://127.0.0.1:7860/sdapi/v1/txt2img"
                {:form-params {
                               :enable_hr                            false,
-                              :denoising_strength                   0,
-                              :firstphase_width                     0,
-                              :firstphase_height                    0,
-                              :hr_scale                             2,
-                              :hr_upscaler                          "string",
-                              :hr_second_pass_steps                 0,
-                              :hr_resize_x                          0,
-                              :hr_resize_y                          0,
-                              :hr_prompt                            "",
-                              :hr_negative_prompt                   "",
                               :prompt                               "Mario reaching for a super star in a cyberpunk city",
                               :styles                               [],
-                              :seed                                 -1,
-                              :subseed                              -1,
-                              :subseed_strength                     0,
-                              :seed_resize_from_h                   -1,
-                              :seed_resize_from_w                   -1,
+                              :seed                                 seed,
                               :batch_size                           1,
                               :n_iter                               1,
                               :steps                                50,
                               :cfg_scale                            7,
                               :width                                512,
                               :height                               512,
-                              :restore_faces                        false,
-                              :tiling                               false,
-                              :do_not_save_samples                  false,
-                              :do_not_save_grid                     false,
-                              :eta                                  0,
-                              :s_min_uncond                         0,
-                              :s_churn                              0,
-                              :s_tmax                               0,
-                              :s_tmin                               0,
-                              :s_noise                              1,
                               :override_settings                    {},
                               :override_settings_restore_afterwards true,
                               :script_args                          [],
                               :sampler_index                        "Euler",
-                              :send_images                          true,
                               :save_images                          true,
-                              :alwayson_scripts                     {}
-                              }}
+                              }}))
+(defn send-api-request [prompt seed]
+  (prn (str "Should be sending API request right now for " prompt " and " seed)))
 
-               )
-  )
+(defn images-in-dir [dir]
+  (prn "Grabbing images for " dir)
+  (let [f (io/file dir)
+        children-f (filter #(not (.isDirectory %)) (.listFiles f))]
+    (reduce (fn [acc fi]
+              (if-let [_ (javax.imageio.ImageIO/read fi)]
+                (conj acc fi)
+                acc))
+            [] children-f)))
+
+(defn send-create-image-requests [prompt]
+  (prn "Creating images for " prompt)
+  (let [prompt-seeds (take 5 (repeatedly 10 #(rand-int 2000000000)))]
+    (doseq [seed prompt-seeds]
+      (send-api-request (str prompt " with no background") seed))
+    (doseq [seed prompt-seeds]
+      (send-api-request (str prompt " upright on a shelf with no background") seed))
+    (doseq [seed prompt-seeds]
+      (send-api-request (str "group of " prompt " with no background") seed))
+    (prn (str "Updating completed prompts with " prompt " and seeds " prompt-seeds))
+    (swap! completed-prompts update-in [prompt :seeds] (fn [_] (vec prompt-seeds)))))
+
+(defn mv-images [prompt]
+  (let [images-f (images-in-dir img-output-dir)]
+    (prn "Moving images for " prompt)
+    (create-prompt-dir prompt)
+    (doseq [f images-f]
+      (let [f-name (.getName ^File f)]
+        (io/copy f (io/file (str img-output-dir "/prompt/" f-name)))
+        (io/delete-file f)))))
 
 (defn generate-images [] "Pulls from todo-prompts"
-  (if (> (count todo-prompts) 0)
+  (prn "Generating images")
+  (if (> (count @todo-prompts) 0)
     (let [prompt (first @todo-prompts)]
-      (swap! todo-prompts disj prompt)
+      (prn "Prompt found " prompt)
+      (swap! todo-prompts subvec 1)
+      (send-create-image-requests prompt)
+      (mv-images prompt))
+    (prn "No prompt found."))
+  (prn-prompts))
 
-      )))
+(defn main []
+  (gen-prompt-lists)
+  (loop [todo @todo-prompts]
+    (prn "Remaining: " todo)
+    (if (> (count todo) 0)
+      (do (generate-images)
+          (recur @todo-prompts))
+      @completed-prompts)))
+
+(main)
