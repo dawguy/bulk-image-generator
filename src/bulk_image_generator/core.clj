@@ -1,6 +1,8 @@
 (ns bulk-image-generator.core
   (:require [clojure.java.io :as io]
-            [clj-http.client :as http])
+            [clj-http.client :as http]
+            [taoensso.carmine :as car]
+            [taoensso.carmine.message-queue :as car-mq])
   (:import (java.io File)))
 
 (def user-home (let [f (io/file (System/getProperty "user.home"))
@@ -8,6 +10,26 @@
                  home))
 (def img-output-dir (or (System/getenv "output-dir") (str user-home "/generated-images")))
 (def prompt-input-file (or (System/getenv "prompt-path") (str user-home "/generated-images/prompts.txt")))
+
+(defonce redis-conn-pool (car/connection-pool {}))
+(def redis-conn-spec {:uri "redis://0.0.0.0:6379"})
+
+(def wcar-opts {:pool redis-conn-pool
+                :spec redis-conn-spec})
+(defmacro wcar* [& body] `(car/wcar ~@wcar-opts ~@body))
+
+(comment "car/get and car/ping are automatically generated. Not sure if I'm a fan of this, but it is what it is"
+   (clojure.repl/doc car/get)
+   (clojure.repl/doc car/ping)
+   (clojure.repl/doc car/keys)
+   (car/wcar wcar-opts (car/ping))
+   (car/wcar wcar-opts (car/set "foo" "bar"))
+   (car/wcar wcar-opts (car/set "foobar" [1 2 3 4 5]))
+   (car/wcar wcar-opts (car/get "foo"))
+   (car/wcar wcar-opts (car/get "broccoli"))
+   (wcar* (car/ping))
+   .)
+
 
 (defn create-prompt-dir [prompt]
   (let [dir-name (str img-output-dir "/" prompt "/" prompt ".txt")]
@@ -83,8 +105,14 @@
       (send-api-request (str prompt " upright on a shelf with no background") seed))
     (doseq [seed prompt-seeds]
       (send-api-request (str "group of " prompt " with no background") seed))
-    (prn (str "Updating completed prompts with " prompt " and seeds " prompt-seeds))
-    (swap! completed-prompts update-in [prompt :seeds] (fn [_] (vec prompt-seeds)))))
+    (prn (str "Updating completed prompts with " prompt " and seeds " (vec prompt-seeds)))
+    (swap! completed-prompts update-in [prompt :seeds] (fn [_] (vec prompt-seeds)))
+    (prn "Setting to REDIS: " prompt " val " (vec prompt-seeds))
+    (try
+      (car/wcar wcar-opts (car/set prompt (vec prompt-seeds)))
+      (car/wcar wcar-opts (car-mq/enqueue "prompts" prompt))
+      (catch Exception e (prn (str "Redis seems to be down."))))
+    ))
 
 (defn mv-images [prompt]
   (let [images-f (images-in-dir img-output-dir)]
@@ -92,7 +120,7 @@
     (create-prompt-dir prompt)
     (doseq [f images-f]
       (let [f-name (.getName ^File f)]
-        (io/copy f (io/file (str img-output-dir "/prompt/" f-name)))
+        (io/copy f (io/file (str img-output-dir "/" prompt "/" f-name)))
         (io/delete-file f)))))
 
 (defn generate-images [] "Pulls from todo-prompts"
