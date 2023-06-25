@@ -1,0 +1,8 @@
+### GET request with a header
+GET localhost:8666/
+
+### GET request with a header
+GET localhost:8666/next
+
+### GET request with a header
+GET localhost:8666/missingasdfa

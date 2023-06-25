@@ -7,5 +7,10 @@
                  [clj-http "3.12.3"]
                  [com.taoensso/carmine "3.2.0"]
                  [cheshire "5.11.0"]
+                 [ring "1.9.5"]
+                 [metosin/reitit "0.7.0-alpha5"]
+                 [metosin/muuntaja "0.6.8"]
+                 [hiccup "2.0.0-RC1"]
+                 [ring/ring-jetty-adapter "1.9.5"]
                  ]
   :repl-options {:init-ns bulk-image-generator.core})
